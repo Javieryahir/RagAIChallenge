@@ -1,9 +1,9 @@
-# main.py
 from langgraph.graph import StateGraph, END
 from typing import TypedDict
 from llm.rag import rag_answer
 from openai import OpenAI
 import datetime
+from retrieval.chroma_store import ensure_chroma_collection
 
 client = OpenAI()
 
@@ -12,16 +12,20 @@ class State(TypedDict):
     intent: str
     answer: str
 
+# Nodo que usa el LLM para detectar la intención
+def detect_intent_llm(state: State):
+    prompt = f"""
+    You are a classifier. Given a user query, respond ONLY with either 'date' or 'rag'.
+    User query: {state['query']}
+    """
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=5
+    )
 
-def detect_intent(state: State):
-    """Clasifica si la intención es 'rag' o 'date'"""
-    query = state["query"]
-
-    # Ejemplo MUY básico (puedes cambiarlo por un LLM)
-    if "fecha" in query.lower() or "día" in query.lower():
-        state["intent"] = "date"
-    else:
-        state["intent"] = "rag"
+    intent = response.choices[0].message.content.strip().lower()
+    state["intent"] = intent
     return state
 
 def answer_with_rag(state: State):
@@ -33,19 +37,17 @@ def answer_with_date(state: State):
     state["answer"] = f"Hoy es {today.strftime('%d/%m/%Y')}."
     return state
 
-# ---- Construcción del grafo ----
 workflow = StateGraph(State)
 
-workflow.add_node("detect_intent", detect_intent)
+workflow.add_node("detect_intent", detect_intent_llm)
 workflow.add_node("rag", answer_with_rag)
 workflow.add_node("date", answer_with_date)
 
 workflow.set_entry_point("detect_intent")
 
-# Condiciones de ramificación
 workflow.add_conditional_edges(
     "detect_intent",
-    lambda state: state["intent"],  # clave: "rag" o "date"
+    lambda state: state["intent"],
     {
         "rag": "rag",
         "date": "date",
@@ -55,10 +57,13 @@ workflow.add_conditional_edges(
 workflow.add_edge("rag", END)
 workflow.add_edge("date", END)
 
-# ---- Compilar ----
+# Compilar
 app = workflow.compile()
 
-# ---- Loop interactivo ----
+# Verificar o crear colección Chroma
+ensure_chroma_collection()
+
+
 if __name__ == "__main__":
     while True:
         q = input("Ask me something (or 'quit'): ")
